@@ -1,0 +1,174 @@
+- hosts: localhost
+  connection: local
+  vars:
+      
+      - version: 0.11.91
+      - mysql_databases: 
+        - name: gogs
+      - mysql_users: 
+        - name: gogs
+          password: gogs
+
+  tasks:
+    
+    - name: Check the version of CentOS
+      command: hostnamectl
+      register: os_check
+      ignore_errors: yes
+
+    - name: Install Git
+      package:
+        name: git
+        state: present
+    
+    - name: Add the Git user
+      command: adduser --system --group --disabled-password --shell /bin/bash --home /home/git --gecos 'Git Version Control' git
+      when:
+        - os_check.stdout | regex_search("Ubuntu")
+
+    -   name: Ensure group "git" exists
+        group:
+            name: git
+            state: present
+        when:
+            - os_check.stdout | regex_search("CentOS")
+    
+    - name: Add the Git user
+      command:  useradd -s /bin/nologin -g git -d /home/git -M git
+      when:
+        - os_check.stdout | regex_search("CentOS")
+
+    - name: Give permissions to Gogs
+      file:
+        path: /home/git
+        state: directory
+        recurse: yes
+        owner: git
+        group: git
+        # mode: '0755'
+      when: 
+            - os_check.stdout | regex_search("CentOS")
+
+    - name: Check if Gogs is already installed
+      stat: path=/usr/local/bin/gogs
+      register: gogs_exists
+
+    # - name: Download the latest repo
+    #   command: wget -O /tmp/gogs https://dl.gogs.io/gogs/{{ version }}/gogs-{{ version }}-linux-amd64
+
+    - name: Download the latest repo
+      get_url:
+        url: https://dl.gogs.io/{{ version }}/gogs_{{ version }}_linux_amd64.tar.gz 
+        dest: /tmp/
+      when: not gogs_exists.stat.exists
+
+    -   name: Extract Gogs 
+        unarchive:
+            src: /tmp/gogs_{{ version }}_linux_amd64.tar.gz 
+            dest: /home/git
+
+    - name: Give permissions to Gogs
+      file:
+        path: /home/git/gogs
+        recurse: yes
+        owner: git
+        # mode: '0755'
+      when: not gogs_exists.stat.exists
+
+    # - name: Give executable permissions to Gogs
+    #   file:
+    #     path: /var/lib/gogs/{{item}}
+    #     state: directory
+    #     owner: git
+    #     mode: '0750'
+    #   with_items:
+    #     - [custom,data,indexers,public,log]
+    #   when: not gogs_exists.stat.exists
+
+    -   name: Processing Gogs Service
+        copy:
+            src: /home/git/gogs/scripts/systemd/gogs.service
+            dest: /etc/systemd/system/
+
+
+    # - name: Gogs Process
+    #   file:
+    #     path: /etc/gogs
+    #     state: directory
+    #     owner: root
+    #     group: git
+    #     mode: '0770'
+    #   when: not gogs_exists.stat.exists
+      
+    
+    # # - name: Granting permissions
+    # #   command: wget https://raw.githubusercontent.com/go-gogs/gogs/master/contrib/systemd/gogs.service -P /etc/systemd/system/
+    
+    # - name: Granting permissions
+    #   get_url:
+    #     url: https://raw.githubusercontent.com/go-gogs/gogs/master/contrib/systemd/gogs.service
+    #     dest: /etc/systemd/system/
+    #   when: not gogs_exists.stat.exists
+
+    - name: Enable service Gogs
+      service:
+        name: gogs
+        enabled: yes
+        state: started
+      when: not gogs_exists.stat.exists
+
+    - name: Port enabling
+      command: ufw allow 3000/tcp
+      when: 
+            - os_check.stdout | regex_search("Ubuntu")
+
+    - name: Install Role MySQL
+      local_action: command ansible-galaxy install -f geerlingguy.mysql
+
+    - name: Check if MYSQL is already installed
+      stat: path=/usr/bin/mysql
+      register: mysql_exists
+
+    - name: Applying role MYSQL
+      command: mv ~/.ansible/roles/geerlingguy.mysql ~/.ansible/roles/pwslab.mysql
+      when: not mysql_exists.stat.exists
+      ignore_errors: yes
+
+    - name: Check if version of Ubuntu
+      shell: |
+        lsb_release -d
+      register: ubuntu_os
+      ignore_errors: yes
+
+    - name: Applying replacement on 20.04
+      lineinfile:
+          dest: ~/.ansible/roles/pwslab.mysql/tasks/setup-Debian.yml
+          regexp: '^(.*){ mysql_python_package_debian }(.*)$'
+          line: '    name: python3-mysqldb'
+          state: present
+      when:
+        - ubuntu_os.stdout | regex_search("20.04")
+
+
+    - name: Installing MYSQL
+      include_role:
+          name: pwslab.mysql
+      when: not mysql_exists.stat.exists
+
+    - name: Applying role MYSQL
+      command: mysql --host=localhost --user=root  -e "GRANT ALL ON gogs.* TO 'gogs'@'localhost' IDENTIFIED BY 'gogs' WITH GRANT OPTION;"
+      when: 
+        - not mysql_exists.stat.exists
+        - ubuntu_os.stdout | regex_search("18.04")
+        - os_check.stdout | regex_search("CentOS")
+      ignore_errors: yes
+
+    - name: Applying role MYSQL
+      command: mysql --host=localhost --user=root -e "GRANT ALL ON gogs.* TO 'gogs'@'localhost'  WITH GRANT OPTION;"
+      when: 
+        - not mysql_exists.stat.exists
+        - ubuntu_os.stdout | regex_search("20.04")
+        - os_check.stdout | regex_search("CentOS")
+      ignore_errors: yes
+
+      
